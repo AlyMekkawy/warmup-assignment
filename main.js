@@ -52,7 +52,6 @@ function getIdleTime(startTime, endTime) {
 // Returns: string formatted as h:mm:ss
 // ============================================================
 function getActiveTime(shiftDuration, idleTime) {
-    // TODO: Implement this function
     let total = timeToSeconds(shiftDuration) - timeToSeconds(idleTime);
     return secondsToTime(total);
 }
@@ -63,8 +62,20 @@ function getActiveTime(shiftDuration, idleTime) {
 // activeTime: (typeof string) formatted as h:mm:ss
 // Returns: boolean
 // ============================================================
+
+/*
+Checks if the driver hit the daily minimum. Normal days need 8h 24m; during the Eid period (Apr 10–30, 2025), only 6h.
+ */
 function metQuota(date, activeTime) {
-    // TODO: Implement this function
+    let [year, month, day] = date.split("-");
+    day = parseInt(day);
+    let requiredInSeconds = (8*3600) + (24*60);
+    if (parseInt(month) === 4 && day >= 10 && day <= 30) {
+         requiredInSeconds = (6 * 3600)
+    }
+
+    const activeTimeSec = timeToSeconds(activeTime);
+    return requiredInSeconds <= activeTimeSec;
 }
 
 // ============================================================
@@ -74,7 +85,57 @@ function metQuota(date, activeTime) {
 // Returns: object with 10 properties or empty object {}
 // ============================================================
 function addShiftRecord(textFile, shiftObj) {
-    // TODO: Implement this function
+    //Step 1: compute derivatives
+    shiftObj.shiftDuration = getShiftDuration(shiftObj.startTime, shiftObj.endTime);
+    shiftObj.idleTime = getIdleTime(shiftObj.startTime, shiftObj.endTime);
+    shiftObj.activeTime = getActiveTime(shiftObj.shiftDuration, shiftObj.idleTime);
+    shiftObj.metQuota = metQuota(shiftObj.date, shiftObj.activeTime);
+    shiftObj.hasBonus = false; //TODO: replace with actual logic
+
+    //Step 2: Check duplicates
+    try {
+        const data = fs.readFileSync(textFile, 'utf-8')
+        const lines = data.trim().split("\n");
+        const header = lines[0];
+        lines.shift();    //removes the header line
+
+
+        const dupesFound = lines.some(r => {
+            const cols = r.split(",");
+            return cols[0] === shiftObj.driverID && cols[2] === shiftObj.date;
+        });
+
+        if (dupesFound) return {};
+        //Step 3: Add Shift & maintain order
+        let stringToWrite = [
+            shiftObj.driverID,
+            shiftObj.driverName,
+            shiftObj.date,
+            shiftObj.startTime,
+            shiftObj.endTime,
+            shiftObj.shiftDuration,
+            shiftObj.idleTime,
+            shiftObj.activeTime,
+            shiftObj.metQuota.toString(),
+            shiftObj.hasBonus.toString()
+        ].join(",");
+
+        lines.push(stringToWrite);
+
+            function driverIdNumFromLine(line) {
+                const id = line.split(",")[0].trim();   // "D1001"
+                return Number(id.slice(1));            // 1001
+            }
+
+        lines.sort((a, b) => driverIdNumFromLine(a) - driverIdNumFromLine(b));
+        let writeBack = `${header}\n${lines.join("\n")}`
+        fs.writeFileSync(textFile, writeBack);
+        return shiftObj;
+    } catch (error) {
+        console.log(error);
+
+        return {}
+    }
 }
 
 // ============================================================
