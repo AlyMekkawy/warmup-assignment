@@ -90,7 +90,7 @@ function addShiftRecord(textFile, shiftObj) {
     shiftObj.idleTime = getIdleTime(shiftObj.startTime, shiftObj.endTime);
     shiftObj.activeTime = getActiveTime(shiftObj.shiftDuration, shiftObj.idleTime);
     shiftObj.metQuota = metQuota(shiftObj.date, shiftObj.activeTime);
-    shiftObj.hasBonus = false; //TODO: replace with actual logic
+    shiftObj.hasBonus = false;
 
     //Step 2: Check duplicates
     try {
@@ -147,7 +147,61 @@ function addShiftRecord(textFile, shiftObj) {
 // Returns: nothing (void)
 // ============================================================
 function setBonus(textFile, driverID, date, newValue) {
-    // TODO: Implement this function
+    if (typeof newValue === "string") {
+        if (
+            newValue.lower().trim() !== 'false' ||
+            newValue.lower().trim() !== 'true'
+        ) return;
+    }
+    if (typeof newValue === 'number' && newValue !== 0 && newValue !== 1) return;
+    if (typeof newValue !== 'boolean') return;
+
+    try{
+        const data = fs.readFileSync(textFile, 'utf-8').trim();
+        const lines = data.split("\n");
+        const header = lines[0];
+
+        const rowNum = lines.findIndex(r => {
+            const columns = r.split(",");
+            return columns[0] === driverID && columns[2] === date;
+        });
+
+        if (rowNum === -1) return;
+
+        const columnsAgain = lines[rowNum].split(",")
+
+        const driver = {
+            driverID: columnsAgain[0],
+            driverName: columnsAgain[1],
+            date: columnsAgain[2],
+            startTime: columnsAgain[3],
+            endTime: columnsAgain[4],
+            shiftDuration: columnsAgain[5],
+            idleTime: columnsAgain[6],
+            activeTime: columnsAgain[7],
+            metQuota: columnsAgain[8],
+            hasBonus: newValue
+        }
+        lines[rowNum] = [
+            driver.driverID,
+            driver.driverName,
+            driver.date,
+            driver.startTime,
+            driver.endTime,
+            driver.shiftDuration,
+            driver.idleTime,
+            driver.activeTime,
+            driver.metQuota,
+            driver.hasBonus.toString()
+        ].join(",");
+
+        fs.writeFileSync(textFile, lines.join("\n"));
+
+    } catch (e) {
+        console.error(e);
+    }
+
+
 }
 
 // ============================================================
