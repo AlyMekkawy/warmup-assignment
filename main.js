@@ -1,9 +1,18 @@
 const fs = require("fs");
-const placeholderDate =("2026-01-01")
-const deliveryStartTime = new Date(`${placeholderDate}T08:00:00`);
-const deliveryEndTime = new Date(`${deliveryStartTime}T22:00:00`);
 const deliveryStartSec = 8*3600;
 const deliveryEndSec = 22*3600;
+const attributes = {
+    driverID: 0,
+    driverName: 1,
+    date: 2,
+    startTime: 3,
+    endTime: 4,
+    shiftDuration: 5,
+    idleTime: 6,
+    activeTime: 7,
+    metQuota: 8,
+    hasBonus: 9
+};
 
 // ============================================================
 // Function 1: getShiftDuration(startTime, endTime)
@@ -22,8 +31,6 @@ function getShiftDuration(startTime, endTime) {
 // Returns: string formatted as h:mm:ss
 // ============================================================
 function getIdleTime(startTime, endTime) {
-    // TODO: Implement this function
-
     // Idle time is defined as any activity before 8am and after 10pm
     // we can easily check this by converting everything to seconds
     // then if the startTime < deliveryStartTime (5am < 8am) then that means there's idle activity time before
@@ -212,7 +219,28 @@ function setBonus(textFile, driverID, date, newValue) {
 // Returns: number (-1 if driverID not found)
 // ============================================================
 function countBonusPerMonth(textFile, driverID, month) {
-    // TODO: Implement this function
+    if (typeof month !== 'string') return;
+    month = parseInt(month);
+
+    try {
+        const data = fs.readFileSync(textFile, 'utf-8').trim();
+        const lines = data.split("\n");
+        lines.shift();
+
+        let bonusAcc = lines.reduce((acc, line) => {
+            const col = line.split(",");
+            let monthToCompare = col[2].split("-")[1]
+            if (parseInt(monthToCompare) === month && col[0] === driverID && col[9].trim() === 'true') {
+                acc++;
+            }
+            return acc;
+        }, 0)
+
+        return bonusAcc <= 0 ? -1 : bonusAcc;
+    } catch (e) {
+        console.log('catch block')
+        return -1
+    }
 }
 
 // ============================================================
@@ -223,7 +251,25 @@ function countBonusPerMonth(textFile, driverID, month) {
 // Returns: string formatted as hhh:mm:ss
 // ============================================================
 function getTotalActiveHoursPerMonth(textFile, driverID, month) {
-    // TODO: Implement this function
+    if (typeof month !== 'number') return;
+
+    try {
+        const data = fs.readFileSync(textFile, 'utf-8').trim();
+        const lines = data.split("\n");
+        lines.shift();
+
+        let activeHoursPerMonthNum = lines.reduce((acc, line) => {
+            const cols = line.split(",");
+            if (cols[attributes.driverID] === driverID &&
+                parseInt(cols[attributes.date].split('-')[1]) === month)
+            acc += timeToSeconds(cols[attributes.activeTime]);
+            return acc;
+        },0)
+
+        return secondsToTime(activeHoursPerMonthNum);
+    } catch (e) {
+        return secondsToTime(0);
+    }
 }
 
 // ============================================================
