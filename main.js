@@ -38,8 +38,12 @@ function getIdleTime(startTime, endTime) {
 
     // in the case that idle activity is found, we should do deliveryStartTime - startTime for the idle time only
 
-    let startSeconds = timeToSeconds(convertToMilitaryTime(startTime));
-    let endSeconds = timeToSeconds(convertToMilitaryTime(endTime));
+    if (typeof startTime !== 'string' || typeof endTime !== 'string') {
+        return secondsToTime(0);
+    }
+
+    let startSeconds = timeToSeconds(startTime);
+    let endSeconds = timeToSeconds(endTime);
 
     let idleTime = 0;
     if  (startSeconds < deliveryStartSec){
@@ -60,6 +64,9 @@ function getIdleTime(startTime, endTime) {
 // ============================================================
 function getActiveTime(shiftDuration, idleTime) {
     let total = timeToSeconds(shiftDuration) - timeToSeconds(idleTime);
+    if (!Number.isFinite(total) || total < 0) {
+        total = 0;
+    }
     return secondsToTime(total);
 }
 
@@ -74,11 +81,20 @@ function getActiveTime(shiftDuration, idleTime) {
 Checks if the driver hit the daily minimum. Normal days need 8h 24m; during the Eid period (Apr 10–30, 2025), only 6h.
  */
 function metQuota(date, activeTime) {
-    let [, month, day] = date.split("-");
-    day = parseInt(day);
+    if (typeof date !== 'string') return false;
+
+    const parts = date.split("-");
+    if (parts.length < 3) return false;
+
+    let [, month, day] = parts;
+    day = parseInt(day, 10);
+    month = parseInt(month, 10);
+
+    if (!Number.isFinite(day) || !Number.isFinite(month)) return false;
+
     let requiredInSeconds = (8*3600) + (24*60);
-    if (parseInt(month) === 4 && day >= 10 && day <= 30) {
-         requiredInSeconds = (6 * 3600)
+    if (month === 4 && day >= 10 && day <= 30) {
+        requiredInSeconds = (6 * 3600)
     }
 
     const activeTimeSec = timeToSeconds(activeTime);
@@ -92,6 +108,14 @@ function metQuota(date, activeTime) {
 // Returns: object with 10 properties or empty object {}
 // ============================================================
 function addShiftRecord(textFile, shiftObj) {
+    if (!shiftObj || typeof shiftObj !== 'object') return {};
+
+    const requiredFields = ['driverID', 'driverName', 'date', 'startTime', 'endTime'];
+    const hasAllFields = requiredFields.every(
+        (key) => Object.hasOwn(shiftObj, key) && typeof shiftObj[key] === 'string'
+    );
+    if (!hasAllFields) return {};
+
     //Step 1: compute derivatives
     shiftObj.shiftDuration = getShiftDuration(shiftObj.startTime, shiftObj.endTime);
     shiftObj.idleTime = getIdleTime(shiftObj.startTime, shiftObj.endTime);
@@ -107,9 +131,14 @@ function addShiftRecord(textFile, shiftObj) {
         lines.shift();    //removes the header line
 
 
+        const driverIDTrimmed = shiftObj.driverID.trim();
+        const dateTrimmed = shiftObj.date.trim();
+
         const dupesFound = lines.some(r => {
+            if (!r.trim()) return false;
             const cols = r.split(",");
-            return cols[0] === shiftObj.driverID && cols[2] === shiftObj.date;
+            if (cols.length < 3) return false;
+            return cols[0].trim() === driverIDTrimmed && cols[2].trim() === dateTrimmed;
         });
 
         if (dupesFound) return {};
@@ -129,10 +158,10 @@ function addShiftRecord(textFile, shiftObj) {
 
         lines.push(stringToWrite);
 
-            function driverIdNumFromLine(line) {
-                const id = line.split(",")[0].trim();   // "D1001"
-                return Number(id.slice(1));            // 1001
-            }
+        function driverIdNumFromLine(line) {
+            const id = (line.split(",")[0] || "").trim();   // e.g. "D1001"
+            return Number(id.slice(1));            // 1001
+        }
 
         lines.sort((a, b) => driverIdNumFromLine(a) - driverIdNumFromLine(b));
         let writeBack = `${header}\n${lines.join("\n")}`
@@ -154,14 +183,24 @@ function addShiftRecord(textFile, shiftObj) {
 // Returns: nothing (void)
 // ============================================================
 function setBonus(textFile, driverID, date, newValue) {
-    if (typeof newValue === "string") {
-        if (
-            newValue.lower().trim() !== 'false' ||
-            newValue.lower().trim() !== 'true'
-        ) return;
-    }
-    if (typeof newValue === 'number' && newValue !== 0 && newValue !== 1) return;
-    if (typeof newValue !== 'boolean') return;
+    const validateBonusValue = (val) => {
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'number') {
+            if (val === 1) return true;
+            if (val === 0) return false;
+            return null;
+        }
+        if (typeof val === 'string') {
+            const v = val.trim().toLowerCase();
+            if (v === 'true' || v === '1') return true;
+            if (v === 'false' || v === '0') return false;
+            return null;
+        }
+        return null;
+    };
+
+    const validated = validateBonusValue(newValue);
+    if (validated === null) return;
 
     try{
         const data = fs.readFileSync(textFile, 'utf-8').trim();
@@ -187,7 +226,7 @@ function setBonus(textFile, driverID, date, newValue) {
             idleTime: columnsAgain[6],
             activeTime: columnsAgain[7],
             metQuota: columnsAgain[8],
-            hasBonus: newValue
+            hasBonus: validated
         }
         lines[rowNum] = [
             driver.driverID,
@@ -227,16 +266,27 @@ function countBonusPerMonth(textFile, driverID, month) {
         const lines = data.split("\n");
         lines.shift();
 
+        let driverSeen = false;
         let bonusAcc = lines.reduce((acc, line) => {
             const col = line.split(",");
-            let monthToCompare = col[2].split("-")[1]
-            if (parseInt(monthToCompare) === month && col[0] === driverID && col[9].trim() === 'true') {
+            if (col.length < 10) return acc;
+            let monthToCompare = (col[2] || '').split("-")[1];
+            if (col[0].trim() === driverID) {
+                driverSeen = true;
+            }
+            if (
+                parseInt(monthToCompare) === month &&
+                col[0].trim() === driverID &&
+                col[9] &&
+                col[9].trim() === 'true'
+            ) {
                 acc++;
             }
             return acc;
         }, 0)
 
-        return bonusAcc <= 0 ? -1 : bonusAcc;
+        if (!driverSeen) return -1;
+        return bonusAcc;
     } catch (e) {
         return -1
     }
@@ -250,7 +300,9 @@ function countBonusPerMonth(textFile, driverID, month) {
 // Returns: string formatted as hhh:mm:ss
 // ============================================================
 function getTotalActiveHoursPerMonth(textFile, driverID, month) {
-    if (typeof month !== 'number') return secondsToTime(0);
+    if (typeof month !== 'number' && typeof month !== 'string') return secondsToTime(0);
+    month = Number(month);
+    if (month < 1 || month > 12) return secondsToTime(0);
 
     try {
         const data = fs.readFileSync(textFile, 'utf-8').trim();
@@ -296,6 +348,14 @@ function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, mont
     const isEidDay = (dateStr) => {
         dateStr = dateStr.split("-");
         return Number(dateStr[1]) === 4 && Number(dateStr[2]) >= 10 && Number(dateStr[2]) <= 30;
+    }
+
+    month = Number(month);
+    if (month < 1 || month > 12) {
+        return secondsToTime(0);
+    }
+    if (typeof bonusCount !== 'number' || bonusCount < 0) {
+        bonusCount = 0;
     }
 
     try {
@@ -370,7 +430,6 @@ function getNetPay(driverID, actualHours, requiredHours, rateFile) {
         const deductionRate = Math.floor(basePay / 185);
         const tolerance = rankToBta3(cols[rateAttributes.tier]);
 
-        const hourDiff = Number(requiredHours) - Number(actualHours);
         const secDiff = timeToSeconds(requiredHours) - timeToSeconds(actualHours);
         const missingInSeconds = secDiff > tolerance * 3600 ? (secDiff - (tolerance*3600)) : 0;
         const missingInHours = (Math.trunc(missingInSeconds/3600));
@@ -383,19 +442,6 @@ function getNetPay(driverID, actualHours, requiredHours, rateFile) {
 }
 
 // ========Helpers===============
-function convertToMilitaryTime(time){
-    let [timePart, xmPart] = time.split(" ");
-    let [h,m,s] = timePart.split(":");
-
-    h = parseInt(h);
-
-    //Case 1: >12 times
-    if (xmPart === 'pm' && h !== 12) h +=12;
-    //Case 2: 00 time
-    if (xmPart === 'am' && h === 12) h = 0;
-
-    return `${String(h).padStart(2, "0")}:${m}:${s}`;
-}
 const getTimeDiff = (t1, t2) => {
     let start = timeToSeconds((t1));
     let end =  timeToSeconds((t2));
