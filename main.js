@@ -1,7 +1,7 @@
 const fs = require("fs");
 const deliveryStartSec = 8*3600;
 const deliveryEndSec = 22*3600;
-const attributes = {
+const attributes = Object.freeze({
     driverID: 0,
     driverName: 1,
     date: 2,
@@ -12,7 +12,7 @@ const attributes = {
     activeTime: 7,
     metQuota: 8,
     hasBonus: 9
-};
+});
 
 // ============================================================
 // Function 1: getShiftDuration(startTime, endTime)
@@ -34,7 +34,7 @@ function getIdleTime(startTime, endTime) {
     // Idle time is defined as any activity before 8am and after 10pm
     // we can easily check this by converting everything to seconds
     // then if the startTime < deliveryStartTime (5am < 8am) then that means there's idle activity time before
-    // same thing for endTime bugt reverse
+    // same thing for endTime but reverse
 
     // in the case that idle activity is found, we should do deliveryStartTime - startTime for the idle time only
 
@@ -74,7 +74,7 @@ function getActiveTime(shiftDuration, idleTime) {
 Checks if the driver hit the daily minimum. Normal days need 8h 24m; during the Eid period (Apr 10–30, 2025), only 6h.
  */
 function metQuota(date, activeTime) {
-    let [year, month, day] = date.split("-");
+    let [, month, day] = date.split("-");
     day = parseInt(day);
     let requiredInSeconds = (8*3600) + (24*60);
     if (parseInt(month) === 4 && day >= 10 && day <= 30) {
@@ -166,7 +166,7 @@ function setBonus(textFile, driverID, date, newValue) {
     try{
         const data = fs.readFileSync(textFile, 'utf-8').trim();
         const lines = data.split("\n");
-        const header = lines[0];
+        // const header = lines[0]; # For some reason WebStorm says this isn't needed. Why is this not needed even though I'm writing back to shifts.txt.
 
         const rowNum = lines.findIndex(r => {
             const columns = r.split(",");
@@ -219,7 +219,7 @@ function setBonus(textFile, driverID, date, newValue) {
 // Returns: number (-1 if driverID not found)
 // ============================================================
 function countBonusPerMonth(textFile, driverID, month) {
-    if (typeof month !== 'string') return;
+    if (typeof month !== 'string') return -1;
     month = parseInt(month);
 
     try {
@@ -238,7 +238,6 @@ function countBonusPerMonth(textFile, driverID, month) {
 
         return bonusAcc <= 0 ? -1 : bonusAcc;
     } catch (e) {
-        console.log('catch block')
         return -1
     }
 }
@@ -251,7 +250,7 @@ function countBonusPerMonth(textFile, driverID, month) {
 // Returns: string formatted as hhh:mm:ss
 // ============================================================
 function getTotalActiveHoursPerMonth(textFile, driverID, month) {
-    if (typeof month !== 'number') return;
+    if (typeof month !== 'number') return secondsToTime(0);
 
     try {
         const data = fs.readFileSync(textFile, 'utf-8').trim();
@@ -282,7 +281,57 @@ function getTotalActiveHoursPerMonth(textFile, driverID, month) {
 // Returns: string formatted as hhh:mm:ss
 // ============================================================
 function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, month) {
-    // TODO: Implement this function
+    /*
+        Each driver has A day off, eid period is apr 10-30, bonuses decrease by 2.
+     */
+
+    const getWeekday  = (dateStr) => {
+        const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+        const [year, month, day] = dateStr.split("-").map(Number);
+        const date = new Date(year, month - 1, day);
+
+        return days[date.getDay()];
+    }
+    const isEidDay = (dateStr) => {
+        dateStr = dateStr.split("-");
+        return Number(dateStr[1]) === 4 && Number(dateStr[2]) >= 10 && Number(dateStr[2]) <= 30;
+    }
+
+    try {
+        const shiftRows = fs.readFileSync(textFile, 'utf-8').trim().split("\n");
+        const dayOffRows = fs.readFileSync(rateFile, "utf-8").trim().split("\n")
+        shiftRows.shift(); //header
+
+        let dayOffIndex = dayOffRows.findIndex(r => r.split(",").includes(driverID));
+        let dayOff = dayOffRows[dayOffIndex].split(",")[1];
+
+        let requiredSec = shiftRows.reduce((acc, line) => {
+            const col = line.split(",");
+            const day = col[attributes.date];
+            const thisRowsMonth = day.split("-")[1]
+
+
+            if (
+                col[attributes.driverID] !== driverID ||
+                Number(month) !== Number(thisRowsMonth) ||
+                dayOff === getWeekday(day)
+            ) return acc;
+
+
+            const secs = isEidDay(day) ? 6 * 3600 : (8 * 3600) + (24 * 60);
+
+            return acc + secs;
+        },0)
+
+        requiredSec -= bonusCount * (2*3600);
+        requiredSec = requiredSec < 0 ? 0 : requiredSec;
+
+        return secondsToTime(requiredSec);
+
+    } catch (e) {
+        return secondsToTime(0);
+    }
 }
 
 // ============================================================
@@ -315,18 +364,45 @@ const getTimeDiff = (t1, t2) => {
     let start = timeToSeconds((t1));
     let end =  timeToSeconds((t2));
 
-    let total = (end >= start) ? (end - start) : ((end + (24 * 3600)) - start); // this should work for midnight corssing
+    let total = (end >= start) ? (end - start) : ((end + (24 * 3600)) - start); // this should work for midnight crossing
 
     return secondsToTime(total)
 }
-const timeToSeconds = (time) => {
-    if (time.charAt(time.length-1).trimEnd().toLowerCase().replace(/\./g, "") === 'm') //this is a terrible way to check but here we are
-        time = convertToMilitaryTime(time);
-    return time
-        .split(":")
-        .map(Number)
-        .reduce((acc, num, i) => acc + num * [3600, 60, 1][i], 0);
-}
+const timeToSeconds = (timeStr) => {
+    //Big thank you from our sponsor, Gemini 3 for improving my edge case handling
+
+    if (typeof timeStr !== 'string') return 0;
+
+    // 1. Clean & Normalize: Remove extra spaces and dots (e.g., "1:30 p.m." -> "1:30PM")
+    let cleanTime = timeStr.trim().replace(/\s+/g, '').replace(/\./g, '').toUpperCase();
+
+    // 2. Handle AM/PM conversion
+    const is12Hour = cleanTime.includes('AM') || cleanTime.includes('PM');
+
+    if (is12Hour) {
+        // Extract numbers and the modifier (AM/PM)
+        const match = cleanTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?(AM|PM)$/);
+        if (!match) return 0; // Or throw an error for invalid format
+
+        let [_, hours, mins, secs, modifier] = match;
+        hours = parseInt(hours, 10);
+        mins = parseInt(mins, 10);
+        secs = parseInt(secs || 0, 10);
+
+        // Convert to 24-hour logic
+        if (modifier === 'PM' && hours < 12) hours += 12;
+        if (modifier === 'AM' && hours === 12) hours = 0;
+
+        return (hours * 3600) + (mins * 60) + secs;
+    }
+
+    // 3. Handle standard 24-hour or simple H:M:S
+    const parts = cleanTime.split(':').map(Number);
+
+    // Use a reducer that handles cases where seconds might be missing (H:M vs H:M:S)
+    // We reverse it so that the last element is always seconds, the next is minutes, etc.
+    return parts.reverse().reduce((acc, val, i) => acc + val * Math.pow(60, i), 0);
+};
 const secondsToTime = (totalSec) =>{
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
@@ -334,7 +410,6 @@ const secondsToTime = (totalSec) =>{
     const str = (n) => String(n);
     return `${str(h)}:${str(m).padStart(2, "0")}:${str(s).padStart(2, "0")}`;
 }
-
 
 
 module.exports = {
