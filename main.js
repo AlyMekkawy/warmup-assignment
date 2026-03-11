@@ -31,13 +31,6 @@ function getShiftDuration(startTime, endTime) {
 // Returns: string formatted as h:mm:ss
 // ============================================================
 function getIdleTime(startTime, endTime) {
-    // Idle time is defined as any activity before 8am and after 10pm
-    // we can easily check this by converting everything to seconds
-    // then if the startTime < deliveryStartTime (5am < 8am) then that means there's idle activity time before
-    // same thing for endTime but reverse
-
-    // in the case that idle activity is found, we should do deliveryStartTime - startTime for the idle time only
-
     if (typeof startTime !== 'string' || typeof endTime !== 'string') {
         return secondsToTime(0);
     }
@@ -45,12 +38,21 @@ function getIdleTime(startTime, endTime) {
     let startSeconds = timeToSeconds(startTime);
     let endSeconds = timeToSeconds(endTime);
 
-    let idleTime = 0;
-    if  (startSeconds < deliveryStartSec){
-        idleTime += deliveryStartSec - startSeconds;
-    }
-    if (deliveryEndSec < endSeconds) {
-        idleTime += endSeconds - deliveryEndSec;
+    // Helper: compute idle time in a contiguous segment [a, b]
+    const idleInSegment = (a, b) => {
+        let idle = 0;
+        idle += Math.max(0, Math.min(b, deliveryStartSec) - a);  // portion before 8 AM
+        idle += Math.max(0, b - Math.max(a, deliveryEndSec));      // portion after 10 PM
+        return idle;
+    };
+
+    let idleTime;
+    if (startSeconds <= endSeconds) {
+        // Normal case (no midnight crossing)
+        idleTime = idleInSegment(startSeconds, endSeconds);
+    } else {
+        // Midnight crossing: shift spans [startSeconds, 86400) + [0, endSeconds]
+        idleTime = idleInSegment(startSeconds, 86400) + idleInSegment(0, endSeconds);
     }
 
     return secondsToTime(idleTime);
@@ -86,14 +88,15 @@ function metQuota(date, activeTime) {
     const parts = date.split("-");
     if (parts.length < 3) return false;
 
-    let [, month, day] = parts;
+    let [year, month, day] = parts;
+    year = parseInt(year, 10);
     day = parseInt(day, 10);
     month = parseInt(month, 10);
 
     if (!Number.isFinite(day) || !Number.isFinite(month)) return false;
 
     let requiredInSeconds = (8*3600) + (24*60);
-    if (month === 4 && day >= 10 && day <= 30) {
+    if (year === 2025 && month === 4 && day >= 10 && day <= 30) {
         requiredInSeconds = (6 * 3600)
     }
 
@@ -163,8 +166,15 @@ function addShiftRecord(textFile, shiftObj) {
             return Number(id.slice(1));            // 1001
         }
 
-        lines.sort((a, b) => driverIdNumFromLine(a) - driverIdNumFromLine(b));
-        let writeBack = `${header}\n${lines.join("\n")}`
+        lines.sort((a, b) => {
+            const idDiff = driverIdNumFromLine(a) - driverIdNumFromLine(b);
+            if (idDiff !== 0) return idDiff;
+            // Secondary sort by date within the same driver
+            const dateA = a.split(",")[2] || "";
+            const dateB = b.split(",")[2] || "";
+            return dateA.localeCompare(dateB);
+        });
+        let writeBack = `${header}\n${lines.join("\n")}\n`
         fs.writeFileSync(textFile, writeBack);
         return shiftObj;
     } catch (error) {
@@ -207,9 +217,10 @@ function setBonus(textFile, driverID, date, newValue) {
         const lines = data.split("\n");
         // const header = lines[0]; # For some reason WebStorm says this isn't needed. Why is this not needed even though I'm writing back to shifts.txt.
 
-        const rowNum = lines.findIndex(r => {
+        const rowNum = lines.findIndex((r, idx) => {
+            if (idx === 0) return false; // skip header
             const columns = r.split(",");
-            return columns[0] === driverID && columns[2] === date;
+            return columns[0].trim() === driverID && columns[2].trim() === date;
         });
 
         if (rowNum === -1) return;
@@ -258,8 +269,8 @@ function setBonus(textFile, driverID, date, newValue) {
 // Returns: number (-1 if driverID not found)
 // ============================================================
 function countBonusPerMonth(textFile, driverID, month) {
-    if (typeof month !== 'string') return -1;
-    month = parseInt(month);
+    if (typeof month !== 'string' && typeof month !== 'number') return -1;
+    month = parseInt(String(month));
 
     try {
         const data = fs.readFileSync(textFile, 'utf-8').trim();
@@ -346,8 +357,8 @@ function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, mont
         return days[date.getDay()];
     }
     const isEidDay = (dateStr) => {
-        dateStr = dateStr.split("-");
-        return Number(dateStr[1]) === 4 && Number(dateStr[2]) >= 10 && Number(dateStr[2]) <= 30;
+        const parts = dateStr.split("-");
+        return Number(parts[0]) === 2025 && Number(parts[1]) === 4 && Number(parts[2]) >= 10 && Number(parts[2]) <= 30;
     }
 
     month = Number(month);
@@ -363,7 +374,8 @@ function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, mont
         const dayOffRows = fs.readFileSync(rateFile, "utf-8").trim().split("\n")
         shiftRows.shift(); //header
 
-        let dayOffIndex = dayOffRows.findIndex(r => r.split(",").includes(driverID));
+        let dayOffIndex = dayOffRows.findIndex(r => r.split(",")[0].trim() === driverID);
+        if (dayOffIndex === -1) return secondsToTime(0);
         let dayOff = dayOffRows[dayOffIndex].split(",")[1];
 
         let requiredSec = shiftRows.reduce((acc, line) => {
@@ -421,7 +433,7 @@ function getNetPay(driverID, actualHours, requiredHours, rateFile) {
 
     try {
         const rateRows = fs.readFileSync(rateFile, "utf-8").trim().split("\n");
-        const driver = rateRows.find(r => r.split(",").includes(String(driverID)));
+        const driver = rateRows.find(r => r.split(",")[0].trim() === String(driverID));
 
         if (!driver) return 0;
 
@@ -434,7 +446,7 @@ function getNetPay(driverID, actualHours, requiredHours, rateFile) {
         const missingInSeconds = secDiff > tolerance * 3600 ? (secDiff - (tolerance*3600)) : 0;
         const missingInHours = (Math.trunc(missingInSeconds/3600));
 
-        return basePay - (missingInHours * deductionRate);
+        return Math.max(0, basePay - (missingInHours * deductionRate));
     } catch (e){
         console.error(e);
         return 0;
@@ -506,3 +518,5 @@ module.exports = {
     getRequiredHoursPerMonth,
     getNetPay
 };
+
+
